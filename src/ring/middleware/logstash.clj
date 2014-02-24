@@ -2,15 +2,43 @@
   (:import [java.net Socket InetSocketAddress]
            [java.io DataOutputStream])
   (:require [clojure.data.json :as json]
-            [clojure.core.async :as async]))
+            [clojure.core.async :as async]
+            [clj-time.core :as dt]
+            [clj-time.format :as df]))
 
-;; todo log with json_event format
-;; todo log with tags: 2xx 3xx 4xx 5xx exception
+;; todo switch to edn_lines codec?
+
+;; logstash config example
+;;
+;; input {
+;;   tcp {
+;;     codec => "json_lines",
+;;     port => 4444
+;;   }
+;; }
+
+(defn apply-tags [event]
+  (let [status (get-in event ["@fields" :response :status])
+        status-tag (cond
+                    (nil? status)
+                    :exception
+                    (>= 199 status 100)
+                    :informational
+                    (>= 299 status 200)
+                    :success
+                    (>= 399 status 300)
+                    :redirection
+                    (>= 499 status 400)
+                    :client-error
+                    (>= 599 status 500)
+                    :server-error)]
+    (assoc event "@tags" [status-tag])))
 
 (defn log-event [log-socket event]
   (.writeUTF 
    log-socket
    (-> event
+       apply-tags
        json/write-str
        (str \newline))))
 
@@ -29,31 +57,36 @@
 (defn wrap-logstash [handler & {:keys [host port name]
                                 :or {:host "localhost"
                                      :port 4444
-                                     :name "none"}}]
+                                     :app "none"}}]
   (let [hostname (.getHostName (java.net.InetAddress/getLocalHost))
-        events (make-event-chan host port)]
+        events (make-event-chan host port)
+        timestamp-fmt (df/formatters :date-hour-minute-second-fraction)]
     (fn [request]
-      (let [before-time (System/nanoTime)]
+      (let [ts (df/unparse timestamp-fmt (dt/now))]
         (try
-          (let [response (handler request)
+          (let [before-time (System/nanoTime)
+                response (handler request)
                 after-time (System/nanoTime)]
-            (async/>!! 
+            (async/>!!
              events
-             {:type :response
-              :time before-time
-              :request request
-              :response {:status (:status response)
-                         :gen-time (- after-time before-time)}
-              :app name
-              :machine hostname}))
-          (catch 
+             {"@type" :response
+              "@fields"
+              {:app name
+               :machine hostname
+               :request request
+               :response {:status (:status response)
+                         :gen-time (/ (- after-time before-time)
+                                      1000000)}}
+              "@timestamp" ts}))
+          (catch
               Exception 
               e 
-            (async/>!! events {:type :exception
-                               :request request
-                               :time before-time
-                               :app name
-                               :machine hostname
-                               :exception e})))))))
+            (async/>!! events {"@type" :exception
+                               "@fields"
+                               {:app name
+                                :machine hostname
+                                :exception e
+                                :request request}
+                               "@timestamp" ts})))))))
                                
                              
