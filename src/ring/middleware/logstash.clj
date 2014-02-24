@@ -8,6 +8,7 @@
 
 ;; todo switch to edn_lines codec?
 ;; todo handle reconnecting the socket
+;; todo missing out some exceptions
 
 ;; logstash config example
 ;;
@@ -94,16 +95,17 @@
           (catch
               Exception 
               e 
-            (async/>!! events (-> request
-                                  clean-request
-                                  (merge
-                                   {"type" :exception
-                                    "message" (:uri request)
-                                    "source" name
-                                    "source-host" hostname
-                                    :exception e
-                                    "@timestamp" ts
-                                    "@version" "1"})))
+            (async/go
+              (async/>! events (-> request
+                                   clean-request
+                                   (merge
+                                    {"type" :exception
+                                     "message" (:uri request)
+                                     "source" name
+                                     "source-host" hostname
+                                     :exception e
+                                     "@timestamp" ts
+                                     "@version" "1"}))))
             (throw e)))))))
                                
                              
