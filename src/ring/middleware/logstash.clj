@@ -6,10 +6,6 @@
             [clj-time.core :as dt]
             [clj-time.format :as df]))
 
-;; todo switch to edn_lines codec?
-;; todo handle reconnecting the socket
-;; todo missing out some exceptions
-
 ;; logstash config example
 ;;
 ;; input {
@@ -36,27 +32,45 @@
                     :server-error)]
     (assoc event "tags" [status-tag])))
 
-(defn log-event [log-socket-out event]
-  (.print
-   log-socket-out
-   (-> event
-       apply-tags
-       json/write-str
-       (str \newline))))
+(defn make-socket [addr]
+  (try
+    (doto (Socket.)
+      (.setKeepAlive true)
+      (.connect addr 60000))
+    (catch Exception e 
+      (do
+        (Thread/sleep 2000) 
+        nil))))
+
+(defn log-event* [log-addr log-socket event]
+  (try
+    (when (or (nil? log-socket) (.isClosed log-socket))
+      (throw (Exception.)))
+    (let [ps (PrintStream. (.getOutputStream log-socket))]
+      (.print
+       ps
+       (-> event
+           apply-tags
+           json/write-str
+           (str \newline))))
+    log-socket
+    (catch Exception e nil)))
+
+(defn log-event [log-addr log-socket event]
+  (when (nil? (log-event* log-addr log-socket event))
+    (prn "Not connected to log socket. Trying to connect...")
+    (recur log-addr (make-socket log-addr) event)))
 
 (defn make-event-chan [host port]
   (let [chan (async/chan
               (async/sliding-buffer 10000))
-        log-socket (doto (Socket.)
-                     (.setKeepAlive true)
-                     (.connect (InetSocketAddress.
-                                (InetAddress/getByName host)
-                                port)
-                               60000))
-        log-socket-out (PrintStream. (.getOutputStream log-socket))]
-    (async/go-loop [event (async/<! chan)]
-      (log-event log-socket-out event)
-      (recur (async/<! chan)))
+        log-addr (InetSocketAddress.
+                  (InetAddress/getByName host)
+                  port)]
+    (async/go-loop [event (async/<! chan)
+                    sckt nil]
+      (let [possibly-new-socket (log-event log-addr sckt event)]
+        (recur (async/<! chan) possibly-new-socket)))
     chan))
 
 (defn clean-request [request]
@@ -87,8 +101,10 @@
                      "message" (:uri request)
                      "source" name
                      "source-host" hostname
+                     :response-headers (:headers response)
                      :response-status (:status response)
-                     :response-gen-time (float (/ (- after-time before-time) 1000000))
+                     :response-gen-time (float (/ (- after-time before-time) 
+                                                  1000000))
                      "@timestamp" ts
                      "@version" "1"}))))
             response)
