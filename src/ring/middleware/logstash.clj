@@ -32,19 +32,29 @@
                     :server-error)]
     (assoc event "tags" [status-tag])))
 
+(defn wait-till-connection [socket]
+  (future
+    (try
+      (loop []
+          (if (.isConnected socket)
+            true
+            (do
+              (Thread/sleep 500)
+              (recur))))
+      (catch Exception e false))))
+
 (defn make-socket [addr]
   (try
     (doto (Socket.)
       (.setKeepAlive true)
-      (.connect addr 60000))
-    (catch Exception e 
-      (do
-        (Thread/sleep 2000) 
-        nil))))
+      (.connect addr 0))
+    (catch Exception e nil)))
 
 (defn log-event* [log-addr log-socket event]
   (try
-    (when (or (nil? log-socket) (.isClosed log-socket))
+    (when (or (nil? log-socket) 
+              (.isClosed log-socket)
+              (not (wait-till-connection log-socket)))
       (throw (Exception.)))
     (let [ps (PrintStream. (.getOutputStream log-socket))]
       (.print
@@ -58,7 +68,6 @@
 
 (defn log-event [log-addr log-socket event]
   (when (nil? (log-event* log-addr log-socket event))
-    (prn "Not connected to log socket. Trying to connect...")
     (recur log-addr (make-socket log-addr) event)))
 
 (defn make-event-chan [host port]
@@ -119,7 +128,9 @@
                                      "message" (:uri request)
                                      "source" name
                                      "source-host" hostname
-                                     :exception e
+                                     :exception {:name (.toString e)
+                                                 :message (.getMessage e)
+                                                 :trace (map #(.toString %) (.getStackTrace e))}
                                      "@timestamp" ts
                                      "@version" "1"}))))
             (throw e)))))))
