@@ -45,30 +45,39 @@
 
 (defn make-socket [addr]
   (try
-    (doto (Socket.)
-      (.setKeepAlive true)
-      (.connect addr 0))
-    (catch Exception e nil)))
+    (let [socket (doto (Socket.)
+                   (.setKeepAlive true)
+                   (.connect addr 0))]
+      (when (not @(wait-till-connection socket))
+        (throw (Exception.)))
+      socket)
+    (catch Exception e {})))
 
-(defn log-event* [log-addr log-socket event]
+(defn log-event* [log-addr log-context event]
   (try
-    (when (or (nil? log-socket) 
-              (.isClosed log-socket)
-              (not (wait-till-connection log-socket)))
-      (throw (Exception.)))
-    (let [ps (PrintStream. (.getOutputStream log-socket))]
-      (.print
-       ps
-       (-> event
-           apply-tags
-           json/write-str
-           (str \newline))))
-    log-socket
-    (catch Exception e nil)))
+    (let [log-socket (:socket log-context)]
+      (when (or (nil? log-socket) 
+                (.isClosed log-socket))
+        (throw (Exception.)))
+      (let [ps (or (:writer log-context)
+                   (PrintStream. (.getOutputStream log-socket)))]
+        (.print
+         ps
+         (-> event
+             apply-tags
+             json/write-str
+             (str \newline)))
+        {:socket log-socket
+         :writer ps}))
+    (catch Exception e {})))
 
-(defn log-event [log-addr log-socket event]
-  (when (nil? (log-event* log-addr log-socket event))
-    (recur log-addr (make-socket log-addr) event)))
+(defn log-event [log-addr log-context event]
+  (let [result (log-event* log-addr log-context event)]
+    (if-not (nil? (:socket result))
+      result
+      (recur log-addr 
+             {:socket (make-socket log-addr)}
+             event))))
 
 (defn make-event-chan [host port]
   (let [chan (async/chan
@@ -77,9 +86,9 @@
                   (InetAddress/getByName host)
                   port)]
     (async/go-loop [event (async/<! chan)
-                    sckt nil]
-      (let [possibly-new-socket (log-event log-addr sckt event)]
-        (recur (async/<! chan) possibly-new-socket)))
+                    log-context nil]
+      (let [possibly-new-context (log-event log-addr log-context event)]
+        (recur (async/<! chan) possibly-new-context)))
     chan))
 
 (defn clean-request [request]
