@@ -1,4 +1,4 @@
-(defproject kjw/ring-logstash "0.1.2"
+(defproject kjw/ring-logstash "0.1.3"
   :description "Send ring requests, response statuses and exceptions to logtash via TCP."
   :url "http://github.com/kjw/ring-logstash"
   :license {:name "Eclipse Public License"
